@@ -123,21 +123,32 @@ function speak(text, slow) {
   } catch (e) { }
 }
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-function listen() {
+// iPhones often never send a "final" result, so keep the live transcript and use it when listening ends.
+let MIC_REC = null;
+function listen(onHear) {
   return new Promise((res, rej) => {
     try {
-      const r = new SR(); r.lang = "fr-FR"; r.interimResults = false; r.maxAlternatives = 3;
-      let done = false;
-      r.onresult = e => { done = true; res(Array.from(e.results[0]).map(x => x.transcript)); };
-      r.onerror = e => { done = true; rej(e.error || "error"); };
-      r.onend = () => { if (!done) rej("no-speech"); };
+      try { speechSynthesis.cancel(); } catch (e) { }
+      const r = new SR(); MIC_REC = r;
+      r.lang = "fr-FR"; r.interimResults = true; r.continuous = false; r.maxAlternatives = 3;
+      let heard = [], err = null;
+      r.onresult = e => {
+        const alts = []; for (let i = 0; i < e.results.length; i++) alts.push(e.results[i][0].transcript);
+        heard = [alts.join(" ")].concat(Array.from(e.results[e.results.length - 1]).slice(1).map(x => x.transcript));
+        if (onHear) onHear(heard[0]);
+      };
+      r.onerror = e => { err = e.error || "error"; };
+      r.onend = () => { MIC_REC = null; clearTimeout(stopT); heard[0] && heard[0].trim() ? res(heard) : rej(err || "no-speech"); };
+      const stopT = setTimeout(() => { try { r.stop(); } catch (e) { } }, 7000);
       r.start();
     } catch (e) { rej("unsupported"); }
   });
 }
+const MIC_BLOCKED = ["not-allowed", "service-not-allowed", "audio-capture", "unsupported"];
+const speakMode = () => S.speak || (SR ? "mic" : "self");
 function speechScore(heard, target) {
   const t = bare(target).split(" "), h = new Set(bare(heard).split(" "));
-  return t.filter(w => h.has(w)).length / t.length;
+  return t.filter(w => h.has(w) || [...h].some(x => x.length > 3 && lev(x, w) <= 1)).length / t.length;
 }
 
 /* ---------- conjugation engine ---------- */
@@ -220,7 +231,7 @@ const ex = {
     const others = shuffle(unitItems(it.ui, "s").filter(x => x.id !== it.id).flatMap(x => tokens(x.fr))).filter(w => !own.some(o => bare(o) === bare(w)));
     return { t: "tiles", item: it, kind: "Build the sentence", prompt: it.en, answers: [it.fr, ...it.alts], bank: shuffle([...own, ...[...new Set(others)].slice(0, 3)]) };
   },
-  speak: it => ({ t: "speak", item: it, kind: "Say it out loud", audio: it.fr }),
+  speak: it => speakMode() === "off" ? ex.tiles(it) : ({ t: "speak", item: it, kind: "Say it out loud", audio: it.fr }),
   conj: (inf, tense, p) => { const a = conj(inf, tense, p); return { t: "conj", kind: TENSES[tense] + " · " + inf, inf, tense, p, answers: a, pron: pronFor(p, a[0], tense), hint: true }; },
   dlg: (u, turn, i) => ({ t: "dlg", u, turn, i, opts: shuffle(turn[2].map((o, k) => ({ fr: o[0], en: o[1], hint: o[2], ok: k === 0 }))) })
 };
@@ -352,7 +363,7 @@ function renderEx() {
       : e.listen ? `<div class="q">${esc(e.meaning)}</div><p class="muted" style="margin:0">Listen, then write it in French.</p>${audioBtns(e.audio)}` : `<div class="q">${esc(e.prompt)}</div>`;
     const hint = e.hint ? `<div class="row"><span class="hintline fr" id="hintline" aria-label="Hint">${esc(mask(e.answers[0], e.shown || 0))}</span><button class="linkish" id="hintbtn">Show a letter</button></div>` : "";
     body = `<div class="q-kind">${e.kind}</div>${prompt}${hint}
-      <textarea id="ans" class="inp" lang="fr" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" rows="2" placeholder="Type in French"></textarea>
+      <textarea id="ans" class="inp" enterkeyhint="done" lang="fr" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" rows="2" placeholder="Type in French"></textarea>
       <div class="accents">${ACC.map(a => `<button data-acc="${a}" aria-label="Insert ${a}">${a}</button>`).join("")}</div>`;
     foot = `<button class="btn wide" id="check">Check</button>`;
     if (e.listen) speak(e.audio);
@@ -366,7 +377,9 @@ function renderEx() {
   } else if (e.t === "speak") {
     body = `<div class="q-kind">${e.kind}</div><div class="q fr">${esc(e.item.fr)}</div><p class="muted">${esc(e.item.en)}</p>${audioBtns(e.item.fr)}
       <p class="muted">Listen, then say the whole sentence out loud. Copy the rhythm, not just the words.</p>`;
-    foot = SR ? `<button class="btn wide" id="mic">${ICON.mic.replace("<svg", '<svg width="20" height="20" style="vertical-align:-4px"')} Tap and speak</button><button class="linkish" id="selfok">Can't talk right now? I said it in my head</button>`
+    const useMic = SR && speakMode() === "mic";
+    body += useMic ? `<p class="heard" id="heard" aria-live="polite"></p>` : "";
+    foot = useMic ? `<button class="btn wide" id="mic">Tap, then speak</button><button class="btn wide ghost" id="selfok">I said it out loud (skip the mic)</button>`
       : `<button class="btn wide ok" id="selfok">I said it out loud</button><button class="linkish" id="skip">Skip</button>`;
     speak(e.item.fr);
   } else if (e.t === "dlg") {
@@ -389,7 +402,9 @@ function renderEx() {
   if (e.t === "tiles") drawTiles(e);
   const inp = $("#ans");
   if (inp) {
-    inp.addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); doCheck(); } });
+    // Return just closes the keyboard; only the Check button submits.
+    inp.addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); inp.blur(); } });
+    inp.addEventListener("input", () => { P.lastKey = Date.now(); });
     if (window.matchMedia("(pointer:fine)").matches) inp.focus();
   }
 }
@@ -406,7 +421,7 @@ function feedback(ok, title, detail, item) {
       P.combo = 0;
       const e = P.q[P.i];
       // Mistakes come back at the end of the session (once).
-      if (P.mode !== "sprint" && !P.retried.has(P.i)) { P.retried.add(P.q.length); P.q.push(Object.assign({}, e, { usedHint: false, shown: 0, checked: false, picked: [] })); }
+      if (P.mode !== "sprint" && !P.retried.has(P.i)) { P.retried.add(P.q.length); P.q.push(Object.assign({}, e, { usedHint: false, shown: 0, checked: false, picked: [], confirmShort: false })); }
     }
     grade(item, ok, P.q[P.i] && P.q[P.i].usedHint);
   }
@@ -428,6 +443,10 @@ function doCheck() {
     let v = $("#ans").value;
     if (e.t === "conj") v = v.replace(/^\s*(que\s+|qu')?(j'\s*|(je|tu|il|elle|on|nous|vous|ils|elles)\s+)/i, "");
     if (!v.trim()) return;
+    if (Date.now() - (P.lastKey || 0) < 600) return; // tapped Check while typing
+    if (!e.confirmShort && bare(v).length < bare(e.answers[0].replace(/\(e\)s?/g, "")).length * 0.6) {
+      e.confirmShort = true; toast("That looks unfinished. Keep typing, or tap Check again to submit."); return;
+    }
     const r = check(v, e.answers);
     $("#ans").disabled = true;
     const ans = e.t === "conj" ? `${esc(e.pron)} ${esc(e.answers[0])}` : esc(e.answers[0]);
@@ -435,6 +454,7 @@ function doCheck() {
     else { feedback(false, "Not quite", `Correct answer: <span class="fr">${ans}</span>`, e.item); speak(e.t === "conj" ? sayConj(e.inf, e.tense, e.p) : e.answers[0]); }
   } else if (e.t === "tiles") {
     if (!e.picked.length) return;
+    if (!e.confirmShort && e.picked.length < tokens(e.answers[0]).length * 0.6) { e.confirmShort = true; toast("Your sentence looks unfinished. Add more words, or tap Check again to submit."); return; }
     const said = e.picked.map(k => e.bank[k]).join(" ");
     const ok = e.answers.some(a => bare(a) === bare(said));
     e.checked = true;
@@ -518,12 +538,21 @@ document.addEventListener("click", ev => {
   }
   if (t.id === "selfok" && e.t === "speak") { feedback(true, "Bien !", "Shadowing every day trains your mouth and your ear at once.", e.item); return; }
   if (t.id === "mic" && e.t === "speak") {
-    t.disabled = true; t.textContent = "Listening…";
-    listen().then(alts => {
+    if (MIC_REC) { try { MIC_REC.stop(); } catch (er) { } return; } // second tap = done talking
+    const heardEl = $("#heard");
+    t.textContent = "Listening… tap when done"; heardEl.textContent = "";
+    listen(txt => { heardEl.textContent = "I hear: " + txt; }).then(alts => {
       const best = alts.reduce((m, a) => Math.max(m, speechScore(a, e.item.fr)), 0);
-      if (best >= 0.7) feedback(true, pick(PRAISE), `I heard: <span class="fr">${esc(alts[0])}</span>`, e.item);
-      else { t.disabled = false; t.textContent = "Try again"; toast(`I heard: "${alts[0]}". Try again, a bit slower.`); }
-    }).catch(err => { t.disabled = false; t.textContent = "Tap and speak"; toast(err === "not-allowed" || err === "service-not-allowed" ? "Microphone is blocked here. Say it out loud, then tap the link below." : "I didn't catch that. Try again."); });
+      if (best >= 0.6) feedback(true, pick(PRAISE), `I heard: <span class="fr">${esc(alts[0])}</span>`, e.item);
+      else { t.textContent = "Try again"; heardEl.textContent = `I heard: "${alts[0]}". Close! Try again a little slower.`; }
+    }).catch(err => {
+      t.textContent = "Tap, then speak";
+      if (MIC_BLOCKED.includes(err)) {
+        S.speak = "self"; save();
+        heardEl.textContent = "The microphone isn't available here, so I've switched to saying it yourself. You can change this under Me › Speaking.";
+        $("#foot .in").innerHTML = `<button class="btn wide ok" id="selfok">I said it out loud</button>`;
+      } else heardEl.textContent = "I didn't hear anything. Tap the button, then start speaking straight away.";
+    });
     return;
   }
   if (t.dataset.dopt != null && e.t === "dlg") {
@@ -648,6 +677,8 @@ function screenProfile() {
       <div class="chips" role="group" aria-label="Daily goal">${[[60, "Relaxed · 60 XP"], [150, "Serious · 150 XP"], [400, "Intensive · 400 XP"], [700, "All in · 700 XP"]].map(([v, l]) => `<button class="chip" data-goal="${v}" aria-pressed="${S.goal === v}">${l}</button>`).join("")}</div></div>
     <div class="card"><div class="eyebrow">Voice speed</div><div class="chips" style="margin-top:8px">${[[0.75, "Slower"], [0.95, "Normal"], [1.1, "Native"]].map(([v, l]) => `<button class="chip" data-rate="${v}" aria-pressed="${S.rate === v}">${l}</button>`).join("")}</div>
       <p class="muted" style="font-size:14px;margin:.6em 0 0">No sound on iPhone? Turn off silent mode. For a better voice, download a French voice in Settings › Accessibility › Spoken Content › Voices.</p></div>
+    <div class="card"><div class="eyebrow">Speaking</div><div class="chips" style="margin-top:8px">${[["mic", "Use the microphone"], ["self", "I'll say it myself"], ["off", "No speaking"]].map(([v, l]) => `<button class="chip" data-speak="${v}" aria-pressed="${speakMode() === v}" ${v === "mic" && !SR ? "disabled" : ""}>${l}</button>`).join("")}</div>
+      <p class="muted" style="font-size:14px;margin:.6em 0 0">${SR ? "The microphone needs Siri &amp; Dictation turned on (Settings › Siri), and Safari must be allowed to use the microphone. It works in the home screen app from GitHub, not inside the Claude page." : "This browser can't check your speech, so you say each sentence and tap to confirm."}</p></div>
     <div class="card"><div class="eyebrow">How Le Quartier teaches</div>
       <ul style="margin:.5em 0 0;padding-left:1.1em;display:grid;gap:6px">
         <li><b>No lives, no paywall.</b> Mistakes come back at the end of the lesson until you get them right.</li>
@@ -681,6 +712,7 @@ document.addEventListener("click", ev => {
   if (t.dataset.tense) { CJ.tense = t.dataset.tense; return render(); }
   if (t.dataset.drill) return startSession("conj", { ...CJ });
   if (t.dataset.goal) { S.goal = +t.dataset.goal; save(); return render(); }
+  if (t.dataset.speak) { S.speak = t.dataset.speak; save(); return render(); }
   if (t.dataset.rate) { S.rate = +t.dataset.rate; save(); speak("Bonjour, ça va ?"); return render(); }
   if (t.id === "reset") { if (t.dataset.armed) { S = fresh(); save(true); toast("Progress erased."); return render(); } t.dataset.armed = "1"; t.textContent = "Tap again to erase everything"; t.className = "btn bad"; return; }
 });
