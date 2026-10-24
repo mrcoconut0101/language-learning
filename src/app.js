@@ -61,7 +61,7 @@ function grade(item, ok, hinted) {
   const r = S.items[item.id] || { s: 0, due: 0, n: 0, w: 0 };
   r.n++;
   if (ok && hinted) r.s = Math.max(1, r.s);
-  else if (ok) r.s = Math.min(7, r.s + 1); else { r.s = Math.max(0, r.s - 2); r.w++; }
+  else if (ok) { if (r.s < 2 || r.due <= Date.now()) r.s = Math.min(7, r.s + 1); } else { r.s = Math.max(0, r.s - 2); r.w++; }
   r.due = Date.now() + GAPS[r.s];
   S.items[item.id] = r;
 }
@@ -214,7 +214,7 @@ const ex = {
   },
   mcListen: it => ({ t: "mc", item: it, kind: "Tap what you hear", listen: true, audio: it.fr, ans: it.fr, opts: shuffle([it.fr, ...distractors(it, "fr", 3)]), optFr: true }),
   type: it => ({ t: "type", item: it, kind: it.type === "w" ? "Write in French" : "Translate into French", prompt: it.en, answers: [it.fr, ...it.alts] }),
-  dict: it => ({ t: "type", item: it, kind: "Write what you hear", listen: true, audio: it.fr, answers: [it.fr, ...it.alts], meaning: it.en, hint: true }),
+  dict: it => ({ t: "type", item: it, kind: "Listen and write", listen: true, audio: it.fr, answers: [it.fr, ...it.alts], meaning: it.en, hint: true }),
   tiles: it => {
     const own = tokens(it.fr);
     const others = shuffle(unitItems(it.ui, "s").filter(x => x.id !== it.id).flatMap(x => tokens(x.fr))).filter(w => !own.some(o => bare(o) === bare(w)));
@@ -336,38 +336,39 @@ function renderEx() {
     body = `<div class="q-kind">${sent ? "New sentence" : "New word"}</div><div class="intro ${sent ? "sent" : ""}"><div class="fr">${esc(e.item.fr)}</div><div class="muted">${esc(e.item.en)}</div>${audioBtns(e.item.fr)}</div>
       <p class="muted">${sent ? "Read it, listen, and say it out loud. You'll build it from tiles next." : "Say it out loud twice. Saying words aloud makes them stick much faster than reading them."}</p>`;
     foot = `<button class="btn wide" id="next">Got it</button>`;
-    setTimeout(() => speak(e.item.fr), 250);
+    speak(e.item.fr);
   } else if (e.t === "gram") {
     const u = e.u, v = u.conj && VERB[u.conj.verbs[0]], tn = u.conj && u.conj.tenses[0];
     body = `<div class="q-kind">${e.table ? "Verb pattern" : "Before you start"}</div><div class="gram">${u.gram}</div>` +
       (e.table && v ? `<div class="card"><div class="eyebrow">${esc(v.inf)} · ${TENSES[tn]} · tap to hear</div><table class="tbl">${PRON.map((p, i) => { const f = conj(v.inf, tn, i)[0]; return `<tr><td>${esc(pronFor(i, f, tn))}</td><td><button class="fr" data-say="${esc(sayConj(v.inf, tn, i))}">${esc(f)}</button></td></tr>`; }).join("")}</table></div>` : "");
     foot = `<button class="btn wide" id="next">Got it</button>`;
   } else if (e.t === "mc") {
-    body = `<div class="q-kind">${e.kind}</div>` + (e.listen ? audioBtns(e.audio, true) : `<div class="q ${e.promptFr ? "fr" : ""}">${esc(e.prompt)}</div>${e.sub ? `<p class="muted" style="margin:0">${esc(e.sub)}</p>` : ""}${e.audio ? audioBtns(e.audio) : ""}`) +
+    body = `<div class="q-kind">${e.kind}</div>` + (e.listen ? `<div class="q">${esc(e.item.en)}</div><p class="muted" style="margin:0">Listen and tap the French you hear.</p>${audioBtns(e.audio)}` : `<div class="q ${e.promptFr ? "fr" : ""}">${esc(e.prompt)}</div>${e.sub ? `<p class="muted" style="margin:0">${esc(e.sub)}</p>` : ""}${e.audio ? audioBtns(e.audio) : ""}`) +
       `<div class="opts">${e.opts.map((o, k) => `<button class="opt ${e.optFr ? "fr" : ""}" data-opt="${k}">${esc(o)}</button>`).join("")}</div>`;
-    if (e.audio) setTimeout(() => speak(e.audio), 250);
+    if (e.audio) speak(e.audio);
   } else if (e.t === "type" || e.t === "conj") {
     const prompt = e.t === "conj"
       ? `<div class="q"><span class="fr">${esc(e.pron)}</span> ______</div><p class="muted">${esc(e.inf)} (${esc(VERB[e.inf].en)}) · ${TENSE_EN[e.tense]}</p>`
-      : e.listen ? audioBtns(e.audio, true) + (e.meaning ? `<p class="muted" style="margin:0">Meaning: ${esc(e.meaning)}</p>` : "") : `<div class="q">${esc(e.prompt)}</div>`;
+      : e.listen ? `<div class="q">${esc(e.meaning)}</div><p class="muted" style="margin:0">Listen, then write it in French.</p>${audioBtns(e.audio)}` : `<div class="q">${esc(e.prompt)}</div>`;
     const hint = e.hint ? `<div class="row"><span class="hintline fr" id="hintline" aria-label="Hint">${esc(mask(e.answers[0], e.shown || 0))}</span><button class="linkish" id="hintbtn">Show a letter</button></div>` : "";
     body = `<div class="q-kind">${e.kind}</div>${prompt}${hint}
       <textarea id="ans" class="inp" lang="fr" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" rows="2" placeholder="Type in French"></textarea>
       <div class="accents">${ACC.map(a => `<button data-acc="${a}" aria-label="Insert ${a}">${a}</button>`).join("")}</div>`;
     foot = `<button class="btn wide" id="check">Check</button>`;
-    if (e.listen) setTimeout(() => speak(e.audio), 250);
+    if (e.listen) speak(e.audio);
   } else if (e.t === "tiles") {
     e.picked = [];
     body = `<div class="q-kind">${e.kind}</div><div class="q">${esc(e.prompt)}</div>
       <div class="tiles" id="answer" aria-label="Your sentence"></div>
-      <div class="tiles bank" id="bank">${e.bank.map((w, k) => `<button class="tile fr" data-tile="${k}">${esc(w)}</button>`).join("")}</div>`;
+      <div class="tiles bank" id="bank"></div>
+      <div class="row" style="justify-content:space-between"><span class="muted" style="font-size:14px">Tap a word in your sentence to send it back.</span><button class="linkish" id="cleartiles">Clear</button></div>`;
     foot = `<button class="btn wide" id="check">Check</button>`;
   } else if (e.t === "speak") {
     body = `<div class="q-kind">${e.kind}</div><div class="q fr">${esc(e.item.fr)}</div><p class="muted">${esc(e.item.en)}</p>${audioBtns(e.item.fr)}
       <p class="muted">Listen, then say the whole sentence out loud. Copy the rhythm, not just the words.</p>`;
     foot = SR ? `<button class="btn wide" id="mic">${ICON.mic.replace("<svg", '<svg width="20" height="20" style="vertical-align:-4px"')} Tap and speak</button><button class="linkish" id="selfok">Can't talk right now? I said it in my head</button>`
       : `<button class="btn wide ok" id="selfok">I said it out loud</button><button class="linkish" id="skip">Skip</button>`;
-    setTimeout(() => speak(e.item.fr), 250);
+    speak(e.item.fr);
   } else if (e.t === "dlg") {
     const u = e.u, t = e.turn;
     const last = P.chat[P.chat.length - 1];
@@ -377,7 +378,7 @@ function renderEx() {
       <button class="linkish" id="showtr">Show translation</button>
       <div class="q-kind">Your reply</div>
       <div class="opts">${e.opts.map((o, k) => `<button class="opt fr" data-dopt="${k}">${esc(o.fr)}</button>`).join("")}</div>`;
-    setTimeout(() => speak(t[0]), 300);
+    speak(t[0]);
   }
   const top = P.mode === "sprint"
     ? `<div class="bar" id="pbar"><b style="width:0%"></b></div><div class="timer" id="ptimer">75s</div>`
@@ -385,11 +386,17 @@ function renderEx() {
   $("#player").innerHTML = `<div class="p-top"><button class="x" id="quit" aria-label="Leave session">${ICON.close}</button>${top}<div class="combo" id="combo">${P.combo > 1 ? "×" + P.combo : ""}</div></div>
     <div class="p-body"><div class="p-inner">${body}</div></div><div class="p-foot" id="foot"><div class="in">${foot}</div></div>`;
   $("#foot").hidden = !foot;
+  if (e.t === "tiles") drawTiles(e);
   const inp = $("#ans");
   if (inp) {
     inp.addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); doCheck(); } });
     if (window.matchMedia("(pointer:fine)").matches) inp.focus();
   }
+}
+// Tiles are redrawn from e.picked each time, so adding and removing always stay in sync.
+function drawTiles(e) {
+  $("#answer").innerHTML = e.picked.map(k => `<button class="tile fr" data-back="${k}">${esc(e.bank[k])}</button>`).join("");
+  $("#bank").innerHTML = e.bank.map((w, k) => `<button class="tile fr ${e.picked.includes(k) ? "used" : ""}" data-tile="${k}" aria-pressed="${e.picked.includes(k)}">${esc(w)}</button>`).join("");
 }
 function feedback(ok, title, detail, item) {
   if (P.mode !== "conv") {
@@ -399,7 +406,7 @@ function feedback(ok, title, detail, item) {
       P.combo = 0;
       const e = P.q[P.i];
       // Mistakes come back at the end of the session (once).
-      if (P.mode !== "sprint" && !P.retried.has(P.i)) { P.retried.add(P.q.length); P.q.push(Object.assign({}, e, { usedHint: false, shown: 0 })); }
+      if (P.mode !== "sprint" && !P.retried.has(P.i)) { P.retried.add(P.q.length); P.q.push(Object.assign({}, e, { usedHint: false, shown: 0, checked: false, picked: [] })); }
     }
     grade(item, ok, P.q[P.i] && P.q[P.i].usedHint);
   }
@@ -430,7 +437,7 @@ function doCheck() {
     if (!e.picked.length) return;
     const said = e.picked.map(k => e.bank[k]).join(" ");
     const ok = e.answers.some(a => bare(a) === bare(said));
-    $("#bank").style.pointerEvents = "none"; $("#answer").style.pointerEvents = "none";
+    e.checked = true;
     if (ok) feedback(true, pick(PRAISE), `<span class="fr">${esc(e.item.fr)}</span>`, e.item); else feedback(false, "Not quite", `Correct answer: <span class="fr">${esc(e.item.fr)}</span>`, e.item);
     speak(e.item.fr);
   }
@@ -503,15 +510,10 @@ document.addEventListener("click", ev => {
     if (P.mode !== "sprint") speak(e.say || e.item.fr);
     return;
   }
-  if (t.dataset.tile != null && e.t === "tiles") {
-    const k = +t.dataset.tile; if (t.classList.contains("used")) return;
-    t.classList.add("used"); e.picked.push(k);
-    const b = document.createElement("button"); b.className = "tile fr"; b.textContent = e.bank[k]; b.dataset.back = k; $("#answer").appendChild(b);
-    return;
-  }
-  if (t.dataset.back != null && e.t === "tiles") {
-    const k = +t.dataset.back; e.picked = e.picked.filter(x => x !== k); t.remove();
-    const src = document.querySelector(`[data-tile="${k}"]`); if (src) src.classList.remove("used");
+  if (e.t === "tiles" && !e.checked && (t.dataset.tile != null || t.dataset.back != null || t.id === "cleartiles")) {
+    if (t.id === "cleartiles") e.picked = [];
+    else { const k = +(t.dataset.tile ?? t.dataset.back); e.picked = e.picked.includes(k) ? e.picked.filter(x => x !== k) : e.picked.concat(k); }
+    drawTiles(e);
     return;
   }
   if (t.id === "selfok" && e.t === "speak") { feedback(true, "Bien !", "Shadowing every day trains your mouth and your ear at once.", e.item); return; }

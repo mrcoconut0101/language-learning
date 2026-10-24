@@ -117,7 +117,7 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-block:16px 
 .tiles{display:flex;flex-wrap:wrap;gap:8px;min-height:56px;padding:10px;border-radius:14px;border:2px dashed var(--border)}
 .tiles.bank{border:0;padding:0}
 .tile{background:var(--surface);border:2px solid var(--border);border-bottom-width:4px;border-radius:12px;padding:8px 12px;font-size:17px}
-.tile.used{visibility:hidden}
+.tile.used{opacity:.35;border-style:dashed}
 .intro{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px;padding:24px 16px;background:var(--surface);border:1px solid var(--border);border-radius:18px}
 .intro .fr{font-size:36px}
 .intro.sent .fr{font-size:26px;line-height:1.25}
