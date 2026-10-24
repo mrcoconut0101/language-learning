@@ -120,6 +120,8 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-block:16px 
 .tile.used{visibility:hidden}
 .intro{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px;padding:24px 16px;background:var(--surface);border:1px solid var(--border);border-radius:18px}
 .intro .fr{font-size:36px}
+.intro.sent .fr{font-size:26px;line-height:1.25}
+.hintline{font-size:22px;letter-spacing:.12em;font-variant-ligatures:none}
 .chat{display:flex;flex-direction:column;gap:10px}
 .bub{max-width:85%;padding:10px 14px;border-radius:16px;font-size:16px}
 .bub.npc{background:var(--surface);border:1px solid var(--border);align-self:flex-start;border-bottom-left-radius:4px}

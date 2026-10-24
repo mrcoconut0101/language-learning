@@ -124,6 +124,8 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-block:16px 
 .tile.used{visibility:hidden}
 .intro{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px;padding:24px 16px;background:var(--surface);border:1px solid var(--border);border-radius:18px}
 .intro .fr{font-size:36px}
+.intro.sent .fr{font-size:26px;line-height:1.25}
+.hintline{font-size:22px;letter-spacing:.12em;font-variant-ligatures:none}
 .chat{display:flex;flex-direction:column;gap:10px}
 .bub{max-width:85%;padding:10px 14px;border-radius:16px;font-size:16px}
 .bub.npc{background:var(--surface);border:1px solid var(--border);align-self:flex-start;border-bottom-left-radius:4px}
@@ -467,11 +469,12 @@ UNITS.forEach((u, ui) => {
 const unitItems = (ui, type) => Object.values(ITEMS).filter(it => it.ui === ui && (!type || it.type === type));
 // Spaced repetition: strength 0..7, each step roughly doubles the gap.
 const GAPS = [0, 10 * 60e3, DAY, 3 * DAY, 7 * DAY, 16 * DAY, 35 * DAY, 90 * DAY];
-function grade(item, ok) {
+function grade(item, ok, hinted) {
   if (!item) return;
   const r = S.items[item.id] || { s: 0, due: 0, n: 0, w: 0 };
   r.n++;
-  if (ok) r.s = Math.min(7, r.s + 1); else { r.s = Math.max(0, r.s - 2); r.w++; }
+  if (ok && hinted) r.s = Math.max(1, r.s);
+  else if (ok) r.s = Math.min(7, r.s + 1); else { r.s = Math.max(0, r.s - 2); r.w++; }
   r.due = Date.now() + GAPS[r.s];
   S.items[item.id] = r;
 }
@@ -501,6 +504,15 @@ function check(input, answers) {
     if (ba.length > 5 && lev(ba, bi) <= (ba.length > 14 ? 2 : 1)) return { ok: true, note: "Small typo. Correct spelling: " + a };
   }
   return { ok: false };
+}
+// Hint: first letter of each word, then `extra` more letters, the rest as underscores.
+function mask(ans, extra) {
+  let seen = 0, startOfWord = true;
+  return [...ans.replace(/\(e\)s?/g, "")].map(ch => {
+    if (!/[a-zà-ÿœæ]/i.test(ch)) { startOfWord = /[\s'’-]/.test(ch); return ch; }
+    const show = startOfWord || seen++ < extra; startOfWord = false;
+    return show ? ch : "_";
+  }).join("");
 }
 const tokens = s => s.replace(/[.,!?;:«»"…]/g, " ").split(/\s+/).filter(Boolean);
 
@@ -605,22 +617,43 @@ function distractors(item, field, n) {
 }
 const ex = {
   intro: it => ({ t: "intro", item: it }),
-  mcEn: it => ({ t: "mc", item: it, kind: "Pick the meaning", prompt: it.fr, audio: it.fr, ans: it.en, opts: shuffle([it.en, ...distractors(it, "en", 3)]) }),
+  mcEn: it => ({ t: "mc", item: it, kind: "Pick the meaning", prompt: it.fr, promptFr: true, audio: it.fr, ans: it.en, opts: shuffle([it.en, ...distractors(it, "en", 3)]) }),
+  mcFr: it => ({ t: "mc", item: it, kind: "Pick the French", prompt: it.en, ans: it.fr, opts: shuffle([it.fr, ...distractors(it, "fr", 3)]), optFr: true }),
+  typeHint: it => Object.assign(ex.type(it), { hint: true }),
+  gram: (u, table) => ({ t: "gram", u, table }),
+  conjMc: (inf, tense, p) => {
+    const a = conj(inf, tense, p)[0], others = [...new Set([0, 1, 2, 3, 4, 5].map(x => conj(inf, tense, x)[0]))].filter(f => f !== a);
+    return { t: "mc", kind: "Pick the right form", prompt: pronFor(p, a, tense) + " ___", promptFr: true, sub: `${inf} (${VERB[inf].en}) · ${TENSE_EN[tense]}`, ans: a, opts: shuffle([a, ...shuffle(others).slice(0, 3)]), optFr: true, say: sayConj(inf, tense, p) };
+  },
   mcListen: it => ({ t: "mc", item: it, kind: "Tap what you hear", listen: true, audio: it.fr, ans: it.fr, opts: shuffle([it.fr, ...distractors(it, "fr", 3)]), optFr: true }),
   type: it => ({ t: "type", item: it, kind: it.type === "w" ? "Write in French" : "Translate into French", prompt: it.en, answers: [it.fr, ...it.alts] }),
-  dict: it => ({ t: "type", item: it, kind: "Write what you hear", listen: true, audio: it.fr, answers: [it.fr, ...it.alts] }),
+  dict: it => ({ t: "type", item: it, kind: "Write what you hear", listen: true, audio: it.fr, answers: [it.fr, ...it.alts], meaning: it.en, hint: true }),
   tiles: it => {
     const own = tokens(it.fr);
     const others = shuffle(unitItems(it.ui, "s").filter(x => x.id !== it.id).flatMap(x => tokens(x.fr))).filter(w => !own.some(o => bare(o) === bare(w)));
     return { t: "tiles", item: it, kind: "Build the sentence", prompt: it.en, answers: [it.fr, ...it.alts], bank: shuffle([...own, ...[...new Set(others)].slice(0, 3)]) };
   },
   speak: it => ({ t: "speak", item: it, kind: "Say it out loud", audio: it.fr }),
-  conj: (inf, tense, p) => { const a = conj(inf, tense, p); return { t: "conj", kind: TENSES[tense] + " · " + inf, inf, tense, p, answers: a, pron: pronFor(p, a[0], tense) }; },
+  conj: (inf, tense, p) => { const a = conj(inf, tense, p); return { t: "conj", kind: TENSES[tense] + " · " + inf, inf, tense, p, answers: a, pron: pronFor(p, a[0], tense), hint: true }; },
   dlg: (u, turn, i) => ({ t: "dlg", u, turn, i, opts: shuffle(turn[2].map((o, k) => ({ fr: o[0], en: o[1], hint: o[2], ok: k === 0 }))) })
 };
-function practiceFor(it, strong) {
-  if (it.type === "w") return strong ? pick([ex.type, ex.type, ex.dict, ex.mcListen])(it) : pick([ex.mcEn, ex.mcListen, ex.type])(it);
-  return pick(strong ? [ex.type, ex.dict, ex.speak, ex.tiles] : [ex.tiles, ex.tiles, ex.dict, ex.speak])(it);
+// Each item gets harder only as you get it right: recognise → choose → build → write → write from audio.
+function stageEx(it) {
+  const s = S.items[it.id] ? S.items[it.id].s : 0;
+  if (it.type === "w") {
+    if (s <= 0) return ex.mcEn(it);
+    if (s === 1) return pick([ex.mcEn, ex.mcFr])(it);
+    if (s === 2) return pick([ex.mcFr, ex.mcListen, ex.typeHint])(it);
+    if (s === 3) return pick([ex.typeHint, ex.type])(it);
+    return pick([ex.type, ex.dict, ex.typeHint])(it);
+  }
+  if (s <= 2) return ex.tiles(it);
+  if (s === 3) return pick([ex.tiles, ex.speak])(it);
+  return pick([ex.tiles, ex.speak, ex.dict])(it);
+}
+function conjMcs(u, n) {
+  if (!u.conj) return [];
+  return Array.from({ length: n }, () => ex.conjMc(u.conj.verbs[0], u.conj.tenses[0], Math.floor(Math.random() * 6)));
 }
 function conjDrills(u, n) {
   if (!u.conj) return [];
@@ -636,19 +669,25 @@ function buildLesson(ui, li) {
   const sp = Math.ceil(sents.length / 3);
   const newS = sents.slice(li * sp, li * sp + sp);
   const q = [];
-  newW.forEach(w => { if (!S.items[w.id]) q.push(ex.intro(w)); q.push(pick([ex.mcEn, ex.mcListen])(w)); });
-  const rest = [];
-  newW.forEach(w => rest.push(ex.type(w)));
-  newS.forEach(s => { rest.push(ex.tiles(s)); rest.push(pick([ex.dict, ex.speak])(s)); });
-  rest.push(...conjDrills(u, 2));
-  // Mix in older material that is due, so nothing is forgotten.
-  dueList().filter(id => ITEMS[id].ui !== ui).slice(0, 3).forEach(id => rest.push(practiceFor(ITEMS[id], S.items[id].s >= 3)));
-  return q.concat(shuffle(rest));
+  if (li === 0) q.push(ex.gram(u, false));
+  // 1. See and hear each new word, then recognise it straight away.
+  newW.forEach(w => { if (!S.items[w.id]) q.push(ex.intro(w)); q.push(ex.mcEn(w)); });
+  // 2. Choose the French (by reading or listening, with written options).
+  q.push(...shuffle(newW.map(w => pick([ex.mcFr, ex.mcFr, ex.mcListen])(w))));
+  // 3. See each sentence, then build it from tiles.
+  newS.forEach(s => { if (!S.items[s.id]) q.push(ex.intro(s)); q.push(ex.tiles(s)); });
+  // 4. Grammar pattern with a table, then pick the right verb form.
+  if (li === 2 && u.conj) { q.push(ex.gram(u, true)); q.push(...conjMcs(u, 3)); }
+  // 5. Write the words, with first letters as a hint.
+  q.push(...shuffle(newW.map(ex.typeHint)));
+  // 6. A few older items that are due, at their own difficulty.
+  dueList().filter(id => ITEMS[id].ui !== ui).slice(0, 3).forEach(id => q.push(stageEx(ITEMS[id])));
+  return q;
 }
 function buildReview() {
   const ids = dueList().slice(0, 15);
   if (ids.length < 6) learned().sort((a, b) => S.items[a].s - S.items[b].s).forEach(id => { if (ids.length < 12 && !ids.includes(id)) ids.push(id); });
-  return shuffle(ids.map(id => practiceFor(ITEMS[id], S.items[id].s >= 3)));
+  return shuffle(ids.map(id => stageEx(ITEMS[id])));
 }
 function buildTest(ui) {
   const u = UNITS[ui];
@@ -706,19 +745,26 @@ function renderEx() {
   const pct = P.mode === "sprint" ? 0 : Math.round(P.i / P.q.length * 100);
   let body = "", foot = "";
   if (e.t === "intro") {
-    body = `<div class="q-kind">New word</div><div class="intro"><div class="fr">${esc(e.item.fr)}</div><div class="muted">${esc(e.item.en)}</div>${audioBtns(e.item.fr)}</div>
-      <p class="muted">Say it out loud twice. Saying words aloud makes them stick much faster than reading them.</p>`;
+    const sent = e.item.type === "s";
+    body = `<div class="q-kind">${sent ? "New sentence" : "New word"}</div><div class="intro ${sent ? "sent" : ""}"><div class="fr">${esc(e.item.fr)}</div><div class="muted">${esc(e.item.en)}</div>${audioBtns(e.item.fr)}</div>
+      <p class="muted">${sent ? "Read it, listen, and say it out loud. You'll build it from tiles next." : "Say it out loud twice. Saying words aloud makes them stick much faster than reading them."}</p>`;
     foot = `<button class="btn wide" id="next">Got it</button>`;
     setTimeout(() => speak(e.item.fr), 250);
+  } else if (e.t === "gram") {
+    const u = e.u, v = u.conj && VERB[u.conj.verbs[0]], tn = u.conj && u.conj.tenses[0];
+    body = `<div class="q-kind">${e.table ? "Verb pattern" : "Before you start"}</div><div class="gram">${u.gram}</div>` +
+      (e.table && v ? `<div class="card"><div class="eyebrow">${esc(v.inf)} · ${TENSES[tn]} · tap to hear</div><table class="tbl">${PRON.map((p, i) => { const f = conj(v.inf, tn, i)[0]; return `<tr><td>${esc(pronFor(i, f, tn))}</td><td><button class="fr" data-say="${esc(sayConj(v.inf, tn, i))}">${esc(f)}</button></td></tr>`; }).join("")}</table></div>` : "");
+    foot = `<button class="btn wide" id="next">Got it</button>`;
   } else if (e.t === "mc") {
-    body = `<div class="q-kind">${e.kind}</div>` + (e.listen ? audioBtns(e.audio, true) : `<div class="q fr">${esc(e.prompt)}</div>${audioBtns(e.audio)}`) +
+    body = `<div class="q-kind">${e.kind}</div>` + (e.listen ? audioBtns(e.audio, true) : `<div class="q ${e.promptFr ? "fr" : ""}">${esc(e.prompt)}</div>${e.sub ? `<p class="muted" style="margin:0">${esc(e.sub)}</p>` : ""}${e.audio ? audioBtns(e.audio) : ""}`) +
       `<div class="opts">${e.opts.map((o, k) => `<button class="opt ${e.optFr ? "fr" : ""}" data-opt="${k}">${esc(o)}</button>`).join("")}</div>`;
     if (e.audio) setTimeout(() => speak(e.audio), 250);
   } else if (e.t === "type" || e.t === "conj") {
     const prompt = e.t === "conj"
       ? `<div class="q"><span class="fr">${esc(e.pron)}</span> ______</div><p class="muted">${esc(e.inf)} (${esc(VERB[e.inf].en)}) · ${TENSE_EN[e.tense]}</p>`
-      : e.listen ? audioBtns(e.audio, true) : `<div class="q">${esc(e.prompt)}</div>`;
-    body = `<div class="q-kind">${e.kind}</div>${prompt}
+      : e.listen ? audioBtns(e.audio, true) + (e.meaning ? `<p class="muted" style="margin:0">Meaning: ${esc(e.meaning)}</p>` : "") : `<div class="q">${esc(e.prompt)}</div>`;
+    const hint = e.hint ? `<div class="row"><span class="hintline fr" id="hintline" aria-label="Hint">${esc(mask(e.answers[0], e.shown || 0))}</span><button class="linkish" id="hintbtn">Show a letter</button></div>` : "";
+    body = `<div class="q-kind">${e.kind}</div>${prompt}${hint}
       <textarea id="ans" class="inp" lang="fr" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" rows="2" placeholder="Type in French"></textarea>
       <div class="accents">${ACC.map(a => `<button data-acc="${a}" aria-label="Insert ${a}">${a}</button>`).join("")}</div>`;
     foot = `<button class="btn wide" id="check">Check</button>`;
@@ -766,9 +812,9 @@ function feedback(ok, title, detail, item) {
       P.combo = 0;
       const e = P.q[P.i];
       // Mistakes come back at the end of the session (once).
-      if (P.mode !== "sprint" && !P.retried.has(P.i)) { P.retried.add(P.q.length); P.q.push(e.t === "tiles" ? ex.tiles(e.item) : e.t === "mc" ? ex.type(e.item) : Object.assign({}, e)); }
+      if (P.mode !== "sprint" && !P.retried.has(P.i)) { P.retried.add(P.q.length); P.q.push(Object.assign({}, e, { usedHint: false, shown: 0 })); }
     }
-    grade(item, ok);
+    grade(item, ok, P.q[P.i] && P.q[P.i].usedHint);
   }
   if (P.mode === "sprint") { setTimeout(() => { if (!P || P.finished) return; P.q.push(sprintEx()); P.i++; renderEx(); }, ok ? 350 : 1100); if (!ok) showFoot(false, title, detail, true); return; }
   showFoot(ok, title, detail);
@@ -853,6 +899,11 @@ document.addEventListener("click", ev => {
   if (t.id === "next") return next();
   if (t.id === "check") return doCheck();
   if (t.id === "skip") return next();
+  if (t.id === "hintbtn") {
+    e.shown = (e.shown || 0) + 1; e.usedHint = true;
+    const h = $("#hintline"); if (h) h.textContent = mask(e.answers[0], e.shown);
+    return;
+  }
   if (t.id === "showtr") { const tr = $("#tr"); if (tr) tr.hidden = false; t.hidden = true; return; }
   if (t.dataset.acc) { const i = $("#ans"); if (!i || i.disabled) return; const s = i.selectionStart ?? i.value.length; i.value = i.value.slice(0, s) + t.dataset.acc + i.value.slice(i.selectionEnd ?? s); i.focus(); i.selectionStart = i.selectionEnd = s + 1; return; }
   if (t.dataset.opt != null && e.t === "mc") {
@@ -860,8 +911,9 @@ document.addEventListener("click", ev => {
     const ch = e.opts[+t.dataset.opt], ok = ch === e.ans;
     t.classList.add(ok ? "right" : "wrong");
     if (!ok) document.querySelectorAll(".opt").forEach(b => { if (b.textContent === e.ans) b.classList.add("right"); });
-    feedback(ok, ok ? pick(PRAISE) : "Not quite", ok ? `<span class="fr">${esc(e.item.fr)}</span> = ${esc(e.item.en)}` : `<span class="fr">${esc(e.item.fr)}</span> = ${esc(e.item.en)}`, e.item);
-    if (P.mode !== "sprint") speak(e.item.fr);
+    const info = e.item ? `<span class="fr">${esc(e.item.fr)}</span> = ${esc(e.item.en)}` : `<span class="fr">${esc(e.say)}</span>`;
+    feedback(ok, ok ? pick(PRAISE) : "Not quite", info, e.item);
+    if (P.mode !== "sprint") speak(e.say || e.item.fr);
     return;
   }
   if (t.dataset.tile != null && e.t === "tiles") {
